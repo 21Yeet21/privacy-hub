@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Hub — Login</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+    <div class="login-wrapper">
+        <div class="login-card">
+            <h1 class="login-title">Privacy Hub</h1>
+            <p class="login-subtitle">Enter the admin password to continue.</p>
+
+            {% if error %}
+            <div class="login-error">{{ error }}</div>
+            {% endif %}
+
+            <form method="POST" action="/login" class="login-form">
+                <input type="password" name="password" placeholder="Password" autofocus required>
+                <button type="submit" class="add-btn" style="width:100%;">Unlock</button>
+            </form>
+        </div>
+    </div>
+
+</body>
+</html>

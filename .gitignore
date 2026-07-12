@@ -1,0 +1,21 @@
+# Python
+venv/
+*.pyc
+__pycache__/
+
+# Secrets & User Data (NEVER COMMIT THESE)
+.env
+devices.json
+
+# Infrastructure Secrets
+torrc
+wgcf-account.toml
+wgcf-profile.conf
+wgcf
+
+# Editor Lock Files
+.~lock.*
+*.swp
+
+# Docker Volumes (Too large / sensitive DBs)
+data/

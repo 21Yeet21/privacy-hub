@@ -1,0 +1,58 @@
+services:
+  pihole:
+    image: pihole/pihole:latest
+    container_name: pihole
+    network_mode: host
+    environment:
+      TZ: "Africa/Tunis"
+      DNS1: "127.0.0.1#5054"
+      DNS2: "1.0.0.1"
+      DNSMASQ_LISTENING: "all"
+    volumes:
+      - "./data/pihole:/etc/pihole"
+      - "./data/dnsmasq:/etc/dnsmasq.d"
+    restart: unless-stopped
+
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy
+    container_name: wg-easy
+    network_mode: host
+    environment:
+      WG_HOST: "192.168.1.13"
+      PASSWORD_HASH: '$$2a$$12$$ARZDo3zaMphI/tC7ijyLuefEib4LeRG5InJDwoFnXA511SCesmi1C'
+      WG_PORT: "51820"
+      WG_DEFAULT_ADDRESS: "10.8.0.x"
+      WG_DEFAULT_DNS: "192.168.1.13"
+      TZ: "Africa/Tunis"
+    volumes:
+      - "./data/wg-easy:/etc/wireguard"
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    restart: unless-stopped
+
+  cloudflared:
+    image: visibilityspots/cloudflared
+    container_name: cloudflared
+    network_mode: host
+    environment:
+      TZ: "Africa/Tunis"
+    restart: unless-stopped
+
+  tor:
+    build:
+      context: .
+      network: host
+    container_name: tor
+    network_mode: host
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    environment:
+      TZ: "Africa/Tunis"
+      GODEBUG: "netdns=cgo"
+    volumes:
+      - "./data/tor:/var/lib/tor"
+      - "./torrc:/etc/tor/torrc:ro"
+      - "./resolv.conf:/etc/resolv.conf:ro"
+    restart: unless-stopped

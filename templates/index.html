@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Hub Control</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+    <div class="header">
+        <h1>Privacy Hub</h1>
+        <div class="subtitle">Manage routing modes for each device individually.</div>
+        <div class="header-actions">
+            <button id="newnymBtn" class="header-btn" title="Build fresh Tor circuits for all Fully Hidden devices">
+                &#x21bb; Refresh Tor Circuits
+            </button>
+            <a href="/logout" class="header-btn header-btn-ghost">Logout</a>
+        </div>
+    </div>
+
+    <div class="main">
+        <section class="panel add-device-panel">
+            <h2>Add New Device</h2>
+            <form id="addDeviceForm">
+                <input type="text" id="deviceName" placeholder="Device Name (e.g., John's iPhone)" required>
+                <input type="text" id="deviceIP" placeholder="WireGuard IP (e.g., 10.8.0.2)" required pattern="10\.8\.0\.[0-9]+">
+                <button type="submit" class="add-btn">Add Device</button>
+            </form>
+        </section>
+
+        <section class="panel devices-panel">
+            <h2>Connected Devices</h2>
+            <div id="devicesContainer" class="device-grid">
+            </div>
+        </section>
+
+        <div id="status" class="status">Initializing...</div>
+    </div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
