@@ -28,6 +28,7 @@ WG_INTERFACE        = "wg0"
 WARP_INTERFACE      = "warp0"
 WARP_CONF           = "/etc/wireguard/warp0.conf"
 WG_SUBNET           = "10.8.0.1"
+LAN_INTERFACE       = "enp7s0"  # Ensure this matches your server's LAN interface
 
 TOR_TRANSPORT_PORT  = 9040
 TOR_DNS_PORT        = 9053
@@ -205,7 +206,7 @@ def apply_device_rules(ip, mode):
     clear_device_rules(ip)
 
     table_map = {
-        "no_ads":       (TBL_NO_ADS,       WG_INTERFACE),
+        "no_ads":       (TBL_NO_ADS,       LAN_INTERFACE),
         "vpn_only":     (TBL_VPN_ONLY,     WARP_INTERFACE),
         "full_privacy": (TBL_FULL_PRIVACY, WARP_INTERFACE),
         "fully_hidden": (TBL_FULLY_HIDDEN, None),
@@ -234,25 +235,13 @@ def apply_device_rules(ip, mode):
              "-s", ip, "-p", "udp", "--dport", "53", "-j", "REDIRECT",
              "--to-ports", str(TOR_DNS_PORT)])
     
-    # "panic" mode requires NO nat rules. Traffic goes to table 104, 
-    # which routes to 127.0.0.1 and dies silently.
-
     print("[Rules] Applied '{}' for {} (table {})".format(mode, ip, tbl))
-
-
-def get_default_gw(interface):
-    r = subprocess.run(["ip", "-4", "route", "show", "dev", interface],
-                       capture_output=True, text=True)
-    for line in r.stdout.strip().split("\n"):
-        if line.startswith("default"):
-            parts = line.split()
-            return parts[2] if len(parts) > 2 else None
-    return None
 
 
 def init_base_layer():
     print("[Init] Initialising base layer...")
 
+    # 1. Ensure WARP is up
     r = subprocess.run(["sudo", "wg", "show", WARP_INTERFACE],
                        capture_output=True, text=True)
     if r.returncode != 0:
@@ -261,34 +250,47 @@ def init_base_layer():
     else:
         print("[Init] {} is already up.".format(WARP_INTERFACE))
 
-    warp_gw = get_default_gw(WARP_INTERFACE)
-    wg_gw   = get_default_gw(WG_INTERFACE)
+    # 2. Populate WARP Routing Tables (101 & 102)
+    # WireGuard interfaces don't have a gateway IP, we just route directly out the interface.
+    for tbl in [TBL_VPN_ONLY, TBL_FULL_PRIVACY]:
+        run(["ip", "route", "flush", "table", str(tbl)], quiet=True)
+        run(["ip", "route", "add", "default", "dev", WARP_INTERFACE, "table", str(tbl)])
 
-    if warp_gw:
-        for tbl in [TBL_VPN_ONLY, TBL_FULL_PRIVACY]:
-            run(["ip", "route", "flush", "table", str(tbl)], quiet=True)
-            run(["ip", "route", "add", "default", "via", warp_gw,
-                 "dev", WARP_INTERFACE, "table", str(tbl)])
+    # 3. Populate LAN Routing Table (100) for No_Ads
+    run(["ip", "route", "flush", "table", str(TBL_NO_ADS)], quiet=True)
+    run(["ip", "route", "add", "default", "dev", LAN_INTERFACE, "table", str(TBL_NO_ADS)])
 
-    if wg_gw:
-        run(["ip", "route", "flush", "table", str(TBL_NO_ADS)], quiet=True)
-        run(["ip", "route", "add", "default", "via", wg_gw,
-             "dev", WG_INTERFACE, "table", str(TBL_NO_ADS)])
-
-    # Blackhole tables (Fully Hidden & Panic)
+    # 4. Blackhole tables (Fully Hidden & Panic)
     for tbl in [TBL_FULLY_HIDDEN, TBL_PANIC]:
         run(["ip", "route", "flush", "table", str(tbl)], quiet=True)
-        run(["ip", "route", "add", "127.0.0.0/8", "dev", "lo",
-             "table", str(tbl)])
-        run(["ip", "route", "add", "default", "via", "127.0.0.1", "dev", "lo",
-             "table", str(tbl)])
+        run(["ip", "route", "add", "127.0.0.0/8", "dev", "lo", "table", str(tbl)])
+        run(["ip", "route", "add", "default", "via", "127.0.0.1", "dev", "lo", "table", str(tbl)])
 
+    # 5. Enable IP forwarding
     run(["sysctl", "-w", "net.ipv4.ip_forward=1"])
 
-    run(["iptables", "-I", "FORWARD", "-i", WG_INTERFACE, "-j", "ACCEPT"], quiet=True)
-    run(["iptables", "-I", "FORWARD", "-o", WG_INTERFACE, "-j", "ACCEPT"], quiet=True)
-    run(["iptables", "-t", "nat", "-A", "POSTROUTING",
-         "-o", WARP_INTERFACE, "-j", "MASQUERADE"], quiet=True)
+    # 6. Base FORWARD rules (allow traffic to move between interfaces)
+    run(["iptables", "-C", "FORWARD", "-i", WG_INTERFACE, "-j", "ACCEPT"], quiet=True)
+    if run(["iptables", "-C", "FORWARD", "-i", WG_INTERFACE, "-j", "ACCEPT"], quiet=True):
+        run(["iptables", "-I", "FORWARD", "1", "-i", WG_INTERFACE, "-j", "ACCEPT"])
+    if run(["iptables", "-C", "FORWARD", "-o", WG_INTERFACE, "-j", "ACCEPT"], quiet=True):
+        run(["iptables", "-I", "FORWARD", "1", "-o", WG_INTERFACE, "-j", "ACCEPT"])
+
+    # 7. Base NAT (MASQUERADE) rules
+    # For WARP traffic
+    if run(["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", WARP_INTERFACE, "-j", "MASQUERADE"], quiet=True):
+        run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", WARP_INTERFACE, "-j", "MASQUERADE"])
+    # For LAN traffic (No_Ads / VPN_Only)
+    if run(["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", LAN_INTERFACE, "-j", "MASQUERADE"], quiet=True):
+        run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", LAN_INTERFACE, "-j", "MASQUERADE"])
+
+    # 8. Allow Input to Tor and Pi-hole (in case wg-easy blocks it)
+    if run(["iptables", "-C", "INPUT", "-p", "tcp", "--dport", "9040", "-j", "ACCEPT"], quiet=True):
+        run(["iptables", "-I", "INPUT", "1", "-p", "tcp", "--dport", str(TOR_TRANSPORT_PORT), "-j", "ACCEPT"])
+    if run(["iptables", "-C", "INPUT", "-p", "udp", "--dport", "9053", "-j", "ACCEPT"], quiet=True):
+        run(["iptables", "-I", "INPUT", "1", "-p", "udp", "--dport", str(TOR_DNS_PORT), "-j", "ACCEPT"])
+    if run(["iptables", "-C", "INPUT", "-p", "udp", "--dport", "53", "-j", "ACCEPT"], quiet=True):
+        run(["iptables", "-I", "INPUT", "1", "-p", "udp", "--dport", "53", "-j", "ACCEPT"])
 
     print("[Init] Base layer ready.\n")
 
