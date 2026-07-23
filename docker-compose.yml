@@ -56,3 +56,11 @@ services:
       - "./torrc:/etc/tor/torrc:ro"
       - "./resolv.conf:/etc/resolv.conf:ro"
     restart: unless-stopped
+
+  unbound:
+    image: mvance/unbound:latest
+    container_name: unbound
+    network_mode: host
+    volumes:
+      - "./data/unbound:/opt/unbound/etc/unbound/"
+    restart: unless-stopped

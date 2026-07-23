@@ -174,14 +174,17 @@ def api_tor_newnym():
 
 
 def run(cmd, quiet=False):
+    """Executes a command. Returns True on success, False on failure."""
     full = ["sudo"] + cmd
     try:
         subprocess.run(full, check=True,
                        stdout=subprocess.DEVNULL if quiet else None,
                        stderr=subprocess.DEVNULL if quiet else None)
+        return True
     except subprocess.CalledProcessError:
         if not quiet:
             print("[WARN] command failed: " + " ".join(full))
+        return False
 
 
 def clear_device_rules(ip):
@@ -190,6 +193,7 @@ def clear_device_rules(ip):
              "-s", ip, "-j", "MARK", "--set-mark", str(tbl)], quiet=True)
         run(["ip", "rule", "del", "from", ip, "lookup", str(tbl)], quiet=True)
 
+    # Clear Tor and Unbound NAT redirects
     run(["iptables", "-t", "nat", "-D", "PREROUTING",
          "-s", ip, "-d", WG_SUBNET, "-j", "RETURN"], quiet=True)
     run(["iptables", "-t", "nat", "-D", "PREROUTING",
@@ -198,6 +202,12 @@ def clear_device_rules(ip):
     run(["iptables", "-t", "nat", "-D", "PREROUTING",
          "-s", ip, "-p", "udp", "--dport", "53", "-j", "REDIRECT",
          "--to-ports", str(TOR_DNS_PORT)], quiet=True)
+    run(["iptables", "-t", "nat", "-D", "PREROUTING",
+         "-s", ip, "-p", "udp", "--dport", "53", "-j", "REDIRECT",
+         "--to-ports", "5333"], quiet=True)
+    run(["iptables", "-t", "nat", "-D", "PREROUTING",
+         "-s", ip, "-p", "tcp", "--dport", "53", "-j", "REDIRECT",
+         "--to-ports", "5333"], quiet=True)
 
     print("[Rules] Cleared all rules for " + ip)
 
@@ -214,26 +224,33 @@ def apply_device_rules(ip, mode):
     }
     tbl, iface = table_map[mode]
 
+    # 1. Mark traffic for the routing table
     run(["iptables", "-t", "mangle", "-A", "PREROUTING",
          "-s", ip, "-j", "MARK", "--set-mark", str(tbl)])
     run(["ip", "rule", "add", "from", ip, "lookup", str(tbl)])
 
+    # 2. Allow access to the local Hub IP (for Pi-hole, UI, etc.)
+    run(["iptables", "-t", "nat", "-A", "PREROUTING",
+         "-s", ip, "-d", WG_SUBNET, "-j", "RETURN"])
+
     if mode == "fully_hidden":
-        run(["iptables", "-t", "nat", "-A", "PREROUTING",
-             "-s", ip, "-d", WG_SUBNET, "-j", "RETURN"])
+        # Route ALL TCP traffic to Tor TransPort (9040)
         run(["iptables", "-t", "nat", "-A", "PREROUTING",
              "-s", ip, "-p", "tcp", "-j", "REDIRECT",
              "--to-ports", str(TOR_TRANSPORT_PORT)])
+        # Route DNS traffic to Tor DNSPort (9053)
         run(["iptables", "-t", "nat", "-A", "PREROUTING",
              "-s", ip, "-p", "udp", "--dport", "53", "-j", "REDIRECT",
              "--to-ports", str(TOR_DNS_PORT)])
 
     elif mode == "full_privacy":
-        run(["iptables", "-t", "nat", "-A", "PREROUTING",
-             "-s", ip, "-d", WG_SUBNET, "-j", "RETURN"])
+        # Route DNS directly to Unbound (5333), bypassing Pi-hole and Cloudflare entirely
         run(["iptables", "-t", "nat", "-A", "PREROUTING",
              "-s", ip, "-p", "udp", "--dport", "53", "-j", "REDIRECT",
-             "--to-ports", str(TOR_DNS_PORT)])
+             "--to-ports", "5333"])
+        run(["iptables", "-t", "nat", "-A", "PREROUTING",
+             "-s", ip, "-p", "tcp", "--dport", "53", "-j", "REDIRECT",
+             "--to-ports", "5333"])
     
     print("[Rules] Applied '{}' for {} (table {})".format(mode, ip, tbl))
 
@@ -268,29 +285,47 @@ def init_base_layer():
 
     # 5. Enable IP forwarding
     run(["sysctl", "-w", "net.ipv4.ip_forward=1"])
+# 5.1 Disable rp_filter to allow Unbound/Tor return traffic to wg0
+    run(["sysctl", "-w", "net.ipv4.conf.all.rp_filter=0"])
+    run(["sysctl", "-w", "net.ipv4.conf.wg0.rp_filter=0"])
+    run(["sysctl", "-w", "net.ipv4.conf.enp7s0.rp_filter=0"])
+    # 5.2 Force all host-generated DNS traffic (Unbound/Pi-hole) through WARP (Table 102)
+    run(["iptables", "-t", "mangle", "-A", "OUTPUT", "-p", "udp", "--dport", "53", "-j", "MARK", "--set-mark", "102"])
+    run(["iptables", "-t", "mangle", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-j", "MARK", "--set-mark", "102"])
+    run(["ip", "rule", "add", "fwmark", "102", "lookup", "102"])
+    if not run(["iptables", "-t", "mangle", "-C", "OUTPUT", "-p", "tcp", "--dport", "53", "-j", "MARK", "--set-mark", "102"], quiet=True):
+        run(["iptables", "-t", "mangle", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-j", "MARK", "--set-mark", "102"])
 
     # 6. Base FORWARD rules (allow traffic to move between interfaces)
-    run(["iptables", "-C", "FORWARD", "-i", WG_INTERFACE, "-j", "ACCEPT"], quiet=True)
-    if run(["iptables", "-C", "FORWARD", "-i", WG_INTERFACE, "-j", "ACCEPT"], quiet=True):
+    if not run(["iptables", "-C", "FORWARD", "-i", WG_INTERFACE, "-j", "ACCEPT"], quiet=True):
         run(["iptables", "-I", "FORWARD", "1", "-i", WG_INTERFACE, "-j", "ACCEPT"])
-    if run(["iptables", "-C", "FORWARD", "-o", WG_INTERFACE, "-j", "ACCEPT"], quiet=True):
+    if not run(["iptables", "-C", "FORWARD", "-o", WG_INTERFACE, "-j", "ACCEPT"], quiet=True):
         run(["iptables", "-I", "FORWARD", "1", "-o", WG_INTERFACE, "-j", "ACCEPT"])
 
     # 7. Base NAT (MASQUERADE) rules
     # For WARP traffic
-    if run(["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", WARP_INTERFACE, "-j", "MASQUERADE"], quiet=True):
+    if not run(["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", WARP_INTERFACE, "-j", "MASQUERADE"], quiet=True):
         run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", WARP_INTERFACE, "-j", "MASQUERADE"])
     # For LAN traffic (No_Ads / VPN_Only)
-    if run(["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", LAN_INTERFACE, "-j", "MASQUERADE"], quiet=True):
+    if not run(["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", LAN_INTERFACE, "-j", "MASQUERADE"], quiet=True):
         run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", LAN_INTERFACE, "-j", "MASQUERADE"])
 
-    # 8. Allow Input to Tor and Pi-hole (in case wg-easy blocks it)
-    if run(["iptables", "-C", "INPUT", "-p", "tcp", "--dport", "9040", "-j", "ACCEPT"], quiet=True):
+    # 8. Allow Input to Tor, Pi-hole, and Unbound (in case wg-easy blocks it)
+    if not run(["iptables", "-C", "INPUT", "-p", "tcp", "--dport", str(TOR_TRANSPORT_PORT), "-j", "ACCEPT"], quiet=True):
         run(["iptables", "-I", "INPUT", "1", "-p", "tcp", "--dport", str(TOR_TRANSPORT_PORT), "-j", "ACCEPT"])
-    if run(["iptables", "-C", "INPUT", "-p", "udp", "--dport", "9053", "-j", "ACCEPT"], quiet=True):
+    if not run(["iptables", "-C", "INPUT", "-p", "udp", "--dport", str(TOR_DNS_PORT), "-j", "ACCEPT"], quiet=True):
         run(["iptables", "-I", "INPUT", "1", "-p", "udp", "--dport", str(TOR_DNS_PORT), "-j", "ACCEPT"])
-    if run(["iptables", "-C", "INPUT", "-p", "udp", "--dport", "53", "-j", "ACCEPT"], quiet=True):
+    if not run(["iptables", "-C", "INPUT", "-p", "udp", "--dport", "53", "-j", "ACCEPT"], quiet=True):
         run(["iptables", "-I", "INPUT", "1", "-p", "udp", "--dport", "53", "-j", "ACCEPT"])
+    # 9. IPv6 Kill Switch (Block all IPv6 from WireGuard to prevent leaks)
+    if not run(["ip6tables", "-C", "FORWARD", "-i", WG_INTERFACE, "-j", "DROP"], quiet=True):
+        run(["ip6tables", "-A", "FORWARD", "-i", WG_INTERFACE, "-j", "DROP"])
+    
+    # Allow Input to Unbound (5333)
+    if not run(["iptables", "-C", "INPUT", "-p", "udp", "--dport", "5333", "-j", "ACCEPT"], quiet=True):
+        run(["iptables", "-I", "INPUT", "1", "-p", "udp", "--dport", "5333", "-j", "ACCEPT"])
+    if not run(["iptables", "-C", "INPUT", "-p", "tcp", "--dport", "5333", "-j", "ACCEPT"], quiet=True):
+        run(["iptables", "-I", "INPUT", "1", "-p", "tcp", "--dport", "5333", "-j", "ACCEPT"])
 
     print("[Init] Base layer ready.\n")
 
