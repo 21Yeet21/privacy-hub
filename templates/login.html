@@ -3,25 +3,32 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Privacy Hub — Login</title>
+    <title>Login - Privacy Hub</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 </head>
 <body>
 
-    <div class="login-wrapper">
-        <div class="login-card">
-            <h1 class="login-title">Privacy Hub</h1>
-            <p class="login-subtitle">Enter the admin password to continue.</p>
-
-            {% if error %}
-            <div class="login-error">{{ error }}</div>
-            {% endif %}
-
-            <form method="POST" action="/login" class="login-form">
-                <input type="password" name="password" placeholder="Password" autofocus required>
-                <button type="submit" class="add-btn" style="width:100%;">Unlock</button>
-            </form>
+    <div class="main" style="max-width: 400px; margin-top: 15vh;">
+        <div class="header" style="justify-content: center; border: none; text-align: center;">
+            <div class="header-left">
+                <h1>Privacy Hub</h1>
+                <p>Enter the admin password to continue.</p>
+            </div>
         </div>
+
+        <section class="panel">
+            {% if error %}
+            <div class="status error" style="margin-bottom: 1rem; border-left-width: 3px;">{{ error }}</div>
+            {% endif %}
+            
+            <form method="POST" action="/login">
+                <div style="display: flex; flex-direction: column; gap: 1rem;">
+                    <input type="password" name="password" placeholder="Password" required autofocus style="text-align: center; font-family: 'JetBrains Mono', monospace;">
+                    <button type="submit" class="add-btn" style="padding: 0.75rem;">Unlock</button>
+                </div>
+            </form>
+        </section>
     </div>
 
 </body>
