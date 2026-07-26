@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Privacy Hub Controller - Phase 4 (Perma-Fix)
-Self-healing firewall rules and corrected routing tables.
+Privacy Hub Controller - Phase 4 (Final)
+Multi-user per-device policy routing with auth, Tor control, and Panic Button.
 """
 
 import json
@@ -19,7 +19,7 @@ from flask import (Flask, render_template, request, session,
 load_dotenv()
 
 # ============================================================
-#  CONFIGURATION
+#  CONFIGURATION (Pulled securely from .env)
 # ============================================================
 FLASK_SECRET_KEY   = os.getenv("FLASK_SECRET_KEY")
 ADMIN_PASSWORD      = os.getenv("ADMIN_PASSWORD")
@@ -41,7 +41,7 @@ TBL_NO_ADS          = 100
 TBL_VPN_ONLY        = 101
 TBL_FULL_PRIVACY    = 102
 TBL_FULLY_HIDDEN    = 103
-TBL_PANIC           = 104
+TBL_PANIC           = 104  # Blackhole table
 # ============================================================
 
 app = Flask(__name__)
@@ -168,6 +168,36 @@ def api_tor_newnym():
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
 
+@app.route("/api/system/refresh", methods=["POST"])
+@login_required
+def api_system_refresh():
+    try:
+        print("[System] Full System Refresh triggered...")
+        
+        # 1. Restart WARP
+        print("[System] Restarting WARP interface...")
+        subprocess.run(["sudo", "wg-quick", "down", "warp0"], capture_output=True)
+        subprocess.run(["sudo", "wg-quick", "up", "warp0"], capture_output=True)
+        
+        # 2. Restart Docker Containers
+        print("[System] Restarting Docker containers...")
+        subprocess.run(["sudo", "docker", "restart", "wg-easy", "tor", "pihole", "unbound", "cloudflared"], capture_output=True)
+        
+        # 3. Wait for containers to boot
+        print("[System] Waiting 10 seconds for containers to initialize...")
+        time.sleep(10)
+        
+        # 4. Re-initialize base layer and re-apply device rules
+        init_base_layer()
+        for dev in load_devices():
+            apply_device_rules(dev["ip"], dev["mode"])
+            
+        print("[System] Full System Refresh complete.")
+        return jsonify({"status": "ok", "message": "System refreshed successfully."}), 200
+    except Exception as e:
+        print(f"[System] Refresh failed: {e}")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
 
 def run(cmd, quiet=False):
     full = ["sudo"] + cmd
@@ -227,7 +257,7 @@ def apply_device_rules(ip, mode):
 
     table_map = {
         "no_ads":       (TBL_NO_ADS,       LAN_INTERFACE),
-        "vpn_only":     (TBL_VPN_ONLY,     LAN_INTERFACE), # Fixed: Was WARP, now LAN
+        "vpn_only":     (TBL_VPN_ONLY,     LAN_INTERFACE), 
         "full_privacy": (TBL_FULL_PRIVACY, WARP_INTERFACE),
         "fully_hidden": (TBL_FULLY_HIDDEN, None),
         "panic":        (TBL_PANIC,        None),
@@ -258,6 +288,7 @@ def apply_device_rules(ip, mode):
         run(["iptables", "-t", "nat", "-A", "PREROUTING", "-s", ip, "-p", "tcp", "--dport", "53", "-j", "DNAT", "--to-destination", "1.0.0.1:53"])
     
     print("[Rules] Applied '{}' for {} (table {})".format(mode, ip, tbl))
+
 
 def init_base_layer():
     print("[Init] Initialising base layer...")
@@ -307,6 +338,15 @@ def init_base_layer():
     run(["sysctl", "-w", "net.ipv4.conf.all.rp_filter=0"])
     run(["sysctl", "-w", "net.ipv4.conf.wg0.rp_filter=0"])
     run(["sysctl", "-w", "net.ipv4.conf.enp7s0.rp_filter=0"])
+
+    # 4.1 Force all host-generated DNS traffic (Unbound/Pi-hole) through WARP (Table 102)
+    if not run(["iptables", "-t", "mangle", "-C", "OUTPUT", "-p", "udp", "--dport", "53", "-j", "MARK", "--set-mark", "102"], quiet=True):
+        run(["iptables", "-t", "mangle", "-A", "OUTPUT", "-p", "udp", "--dport", "53", "-j", "MARK", "--set-mark", "102"])
+    if not run(["iptables", "-t", "mangle", "-C", "OUTPUT", "-p", "tcp", "--dport", "53", "-j", "MARK", "--set-mark", "102"], quiet=True):
+        run(["iptables", "-t", "mangle", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-j", "MARK", "--set-mark", "102"])
+        
+    # Add the routing rule for the mark!
+    run(["ip", "rule", "add", "fwmark", "102", "lookup", "102"], quiet=True)
 
     # 5. Initial Firewall Repair
     repair_base_firewall()

@@ -159,7 +159,36 @@ console.log("[Hub] UI Loaded");
                 });
         });
     }
+    // ----------------------------------------------------------------------
+    // Refresh System Button
+    // ----------------------------------------------------------------------
+    var refreshSystemBtn = document.getElementById("refreshSystemBtn");
+    if (refreshSystemBtn) {
+        refreshSystemBtn.addEventListener("click", function () {
+            if (!window.confirm("This will restart all containers and rebuild the firewall. It takes about 20 seconds. Proceed?")) return;
+            
+            setStatus("Refreshing System... Please wait...", "loading");
+            // Disable all buttons during refresh
+            document.querySelectorAll("button").forEach(function(b) { b.disabled = true; });
 
+            fetch("/api/system/refresh", { method: "POST" })
+                .then(function(response) { return response.json(); })
+                .then(function(data) {
+                    if (data.status === "ok") {
+                        setStatus("System refreshed successfully!", "success");
+                    } else {
+                        setStatus("Error refreshing system: " + (data.error || "Unknown"), "error");
+                    }
+                })
+                .catch(function(err) {
+                    setStatus("Request failed: " + err.message, "error");
+                })
+                .finally(function() {
+                    document.querySelectorAll("button").forEach(function(b) { b.disabled = false; });
+                    loadDevices(); // Reload the device list
+                });
+        });
+    }
     // Kick off initial load
     loadDevices();
 })();
