@@ -345,8 +345,29 @@ def init_base_layer():
     if not run(["iptables", "-t", "mangle", "-C", "OUTPUT", "-p", "tcp", "--dport", "53", "-j", "MARK", "--set-mark", "102"], quiet=True):
         run(["iptables", "-t", "mangle", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-j", "MARK", "--set-mark", "102"])
         
-    # Add the routing rule for the mark!
-    run(["ip", "rule", "add", "fwmark", "102", "lookup", "102"], quiet=True)
+    # Add the DNS fwmark rule only if it does not already exist.
+    # This initializer runs at startup and during System Refresh.
+    rule_check = subprocess.run(
+        ["ip", "-4", "rule", "show"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    if rule_check.returncode != 0:
+        print("[Init] WARNING: Cannot inspect policy rules; not adding fwmark rule.")
+    else:
+        has_dns_mark_rule = any(
+            "fwmark 0x66 lookup 102" in line
+            or "fwmark 102 lookup 102" in line
+            for line in rule_check.stdout.splitlines()
+        )
+
+        if not has_dns_mark_rule:
+            run(["ip", "rule", "add", "fwmark", "102", "lookup", "102"], quiet=True)
+            print("[Init] Added DNS fwmark routing rule.")
+        else:
+            print("[Init] DNS fwmark routing rule already exists; skipping duplicate.")
 
     # 5. Initial Firewall Repair
     repair_base_firewall()
