@@ -1,97 +1,173 @@
-[![Status](https://img.shields.io/badge/Status-Phase_4_Final-success)]()
-[![Architecture](https://img.shields.io/badge/Architecture-Zero_Trust-blue)]()
-[![Tech](https://img.shields.io/badge/Tech-WireGuard_%7C_Tor_%7C_iptables-orange)]()
-[![License](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE)
+# Privacy Hub
 
-# 🛡️ Zero-Trust Privacy Hub
+![Status](https://img.shields.io/badge/Status-Homelab_Project-blue)
+![Architecture](https://img.shields.io/badge/Architecture-Policy_Routing-blue)
+![Tech](https://img.shields.io/badge/Tech-WireGuard_%7C_Tor_%7C_iptables-orange)
+![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
-A self-hosted, enterprise-grade network gateway built on a headless Linux server. It acts as a central brain for all connected devices, allowing per-device, policy-based routing through different privacy tiers (Direct, Ad-Blocking, Cloudflare WARP, and Tor) via a secure web dashboard.
+A self-hosted Linux network gateway for managing per-device traffic routing over WireGuard.
 
-![Privacy Hub Architecture](assets/hero_isometric.png)
+Privacy Hub combines policy-based routing, Pi-hole, Cloudflare WARP, Tor, and Unbound to provide different network-routing profiles for connected devices through a Flask web dashboard.
 
-![Privacy Hub Dashboard](assets/ui_dashboard.png)
-*The web dashboard allows per-device mode assignment, Tor circuit rotation, and instant Panic Mode execution.*
+> **Project status:** Personal homelab project. Configuration and security properties are environment-dependent. This project does not guarantee anonymity, leak prevention, or production-grade network isolation.
 
-## Important Notice
+---
 
-Privacy Hub is an advanced networking appliance. It requires a solid understanding of Linux, `iptables`, Policy-Based Routing (`ip rule`), and Docker. It is designed as a reference architecture for cybersecurity students and homelabers, not a plug-and-play consumer app.
+## Architecture
 
-## Key Features
+[![Privacy Hub Architecture](assets/hero_isometric.png)](assets/hero_isometric.png)
 
-*   **Per-Device Policy Routing:** Device A can stream on WARP while Device B browses on Tor simultaneously on the same WireGuard interface, without interfering with each other.
-*   **Self-Healing Firewall:** If Docker or `wg-easy` restarts and wipes the base `FORWARD` rules, the backend automatically verifies and repairs them on every UI interaction.
-*   **Zero-Trust DNS (`full_privacy` mode):** Routes TCP payloads through Cloudflare WARP for speed, while aggressively hijacking DNS at the kernel level, sending it to a local Unbound resolver, and forcing Unbound's outbound traffic through the WARP tunnel. Cloudflare sees the IP, but never the domain.
-*   **Virtual Air-Gap (Panic Mode):** Instantly blackholes a device's traffic by routing it to a local loopback drop table. Bypasses JavaScript confirmation dialogs for instant execution under duress.
-*   **Auto-Recovery Appliance:** Full `systemd` integration and a network watchdog cron job. Survives power outages, masks laptop sleep states, and silently restores previous device routing states on boot.
+[![Privacy Hub Dashboard](assets/ui_dashboard.png)](assets/ui_dashboard.png)
 
-## The 5 Routing Modes
+## Features
 
-1.  **No Ads:** Routes through standard WireGuard. DNS goes through Pi-hole to block ads. Fastest speed.
-2.  **VPN Only:** Routes all traffic through your LAN. Hides your IP from websites. DNS bypasses Pi-hole and goes straight to Cloudflare.
-3.  **Full Privacy (Split-Trust):** Routes traffic through Cloudflare WARP, but forces DNS queries through local Unbound (which talks directly to root nameservers). Prevents DNS leaks to Cloudflare.
-4.  **Fully Hidden:** Forces ALL TCP traffic through the Tor network via `obfs4` bridges to bypass ISP censorship. Maximum anonymity.
-5.  **Panic:** Instantly drops all network traffic for the device.
+- **Per-device routing:** Assign different routing profiles to individual WireGuard clients.
+- **Pi-hole integration:** DNS-based filtering for supported clients.
+- **Cloudflare WARP:** Route selected device traffic through the WARP interface.
+- **Unbound integration:** Redirect selected DNS queries to a local Unbound resolver.
+- **Tor transparent proxy:** Redirect TCP traffic and UDP DNS queries from selected devices to Tor.
+- **Panic mode:** Apply a loopback-based routing policy to isolate a selected device from normal forwarding.
+- **Boot recovery:** Restore saved device routing policies during controller initialization.
+- **Firewall repair:** Reapply required base firewall rules during initialization and device-mode application.
+- **Web dashboard:** Manage device profiles through an authenticated Flask interface.
 
-> **Note:** All privacy modes (except No Ads) feature an automatic "Kill Switch". If WARP or Tor drops, your internet will stop entirely rather than leaking your real IP.
+## Routing Modes
 
-## Architecture Overview
+The controller assigns dedicated Linux routing tables to five profiles.
 
-Traffic is classified using the `iptables mangle` table based on the device's source IP (`-s 10.8.0.x`), marked with a specific `fwmark`, and pushed into dedicated Linux routing tables (100-104).
+| Profile | Table | Main behavior |
+|---|---:|---|
+| `no_ads` | 100 | LAN gateway routing with intended Pi-hole DNS integration |
+| `vpn_only` | 101 | LAN gateway routing with Cloudflare DNS redirection |
+| `full_privacy` | 102 | WARP routing with DNS redirection to local Unbound |
+| `fully_hidden` | 103 | TCP transparent proxy through Tor and UDP DNS redirection to Tor |
+| `panic` | 104 | Loopback-based routing policy |
 
-![Per-Device Routing Engine](assets/routing_engine_2d.png)
+### Per-device Routing Engine
 
-### The Split-Trust Architecture
+[![Routing Engine](assets/routing_engine_2d.png)](assets/routing_engine_2d.png)
 
-In `full_privacy` mode, the Netfilter stack processes packets in a specific order: NAT PREROUTING happens *before* the routing decision. DNS is hijacked to Unbound, while the rest of the payload is marked and pushed out the WARP interface.
+### Split-Trust DNS
 
-![Split-Trust DNS over WARP](assets/split_trust_dns.png)
+[![Split-Trust DNS](assets/split_trust_dns.png)](assets/split_trust_dns.png)
 
-### The Panic Mode Blackhole
+### Panic Mode
 
-When triggered, the device's traffic is marked with `fwmark 104` and routed to Linux Table 104. This table points to the local loopback (`127.0.0.1`), causing the kernel to silently drop all packets.
+[![Panic Mode](assets/panic_mode_blackhole.png)](assets/panic_mode_blackhole.png)
 
-![Panic Mode Blackhole](assets/panic_mode_blackhole.png)
+### Boot Recovery
 
-### Auto-Recovery & Systemd
+[![Boot Recovery](assets/boot_recovery.png)](assets/boot_recovery.png)
 
-To ensure the Privacy Hub survives a power outage without manual intervention, the infrastructure is managed entirely by `systemd` and a network watchdog.
+> **Important technical notes**
+>
+> - `vpn_only` uses the configured LAN gateway. It is not a separate commercial VPN tunnel.
+> - `full_privacy` routes selected traffic through WARP and redirects DNS queries to local Unbound.
+> - `fully_hidden` redirects TCP traffic and UDP DNS queries to Tor. It does not transparently proxy every possible protocol.
+> - `panic` uses a loopback-based routing table, not a literal kernel blackhole or physical air gap.
+> - WARP and Tor have different privacy properties. Neither guarantees complete anonymity.
 
-![Boot Recovery & Watchdog](assets/boot_recovery.png)
+## Technology Stack
 
-## Quick Start / Prerequisites
+- Linux policy routing (`ip rule`, `ip route`)
+- iptables-compatible Netfilter rules
+- WireGuard / wg-easy
+- Cloudflare WARP
+- Tor
+- Pi-hole
+- Unbound
+- Docker Compose
+- Python and Flask
+- systemd
 
-To deploy this, you will need:
-*   A Linux server (tested on Ubuntu / Dell Inspiron Laptop).
-*   Docker & Docker Compose.
-*   Cloudflare WARP configured (`warp0.conf` via `wgcf`).
-*   WireGuard configured (`wg0` via `wg-easy`).
-*   An understanding of `ip rule`, `ip route`, and `iptables`.
+## Repository Structure
 
-**1. Clone the repo:**
-```bash
-git clone https://github.com/21Yeet21/privacy-hub.git
-cd privacy-hub
+```text
+privacy-hub/
+├── assets/                 # Architecture and UI illustrations
+├── data/                   # Persistent service data
+├── docs/                   # Technical documentation
+├── hub_controller.py       # Flask controller and routing engine
+├── docker-compose.yml      # Container services
+├── Dockerfile              # Custom Tor image build
+├── entrypoint.sh           # Tor container startup
+├── torrc                   # Tor configuration
+├── requirements.txt        # Python dependencies
+├── .env.example            # Configuration template
+└── README.md
 ```
 
-**2. Configure your environment:**
-Copy `.env.example` to `.env` and fill in your local interface, subnets, and WARP settings. Generate a Tor control password hash and inject it into `torrc`.
+## Deployment
 
-**3. Start the services:**
+This repository reflects a specific homelab deployment. The checked-in Compose configuration uses host networking, contains host-specific network values, and builds a custom Tor image.
+
+It is not a universal one-command installer.
+
+### Prerequisites
+
+- Linux server with Docker and Docker Compose
+- Python 3 and a virtual environment
+- WireGuard interface (`wg0`)
+- Cloudflare WARP WireGuard interface (`warp0`)
+- Pi-hole and Unbound configuration
+- Required routing and firewall tools
+- Appropriate systemd service configuration
+
+### Configuration
+
+Review `.env.example` and `docker-compose.yml` before deployment.
+
+The example environment file is not currently connected to every Compose service. Some settings are hardcoded in Compose, and the Tor control-password configuration requires separate attention.
+
+Do not copy the current configuration to another host without adapting interface names, addresses, firewall rules, service dependencies, and credentials.
+
+### Starting an Existing Deployment
+
 ```bash
-sudo docker compose up -d
-sudo systemctl enable --now warp.service
-sudo systemctl enable --now privacy-hub.service
+docker compose up -d
+sudo systemctl start warp.service
+sudo systemctl start privacy-hub.service
 ```
 
-## Deep-Dive Documentation
+These commands assume the required containers, systemd units, WireGuard interfaces, and configuration files already exist.
 
-This README only covers the deployment. To understand *why* certain architectural decisions were made, read the full engineering logs in the `docs/` folder:
+### Dashboard Access
 
-*   [Core Infrastructure & Self-Healing Firewall](docs/01-Networking-Architecture.md)
-*   [Traffic Flow Diagrams](docs/02-Routing-Modes.md)
-*   [Engineering Decisions](docs/06-Engineering-Decisions.md)
-*   [War Stories & Bugfixes](docs/07-War-Stories-And-Bugfixes.md)
+Observed deployment addresses:
+
+- **Local:** `http://192.168.1.13:5000`
+- **Remote over WireGuard:** `http://10.8.0.1:5000`
+
+Replace these addresses with the values appropriate to your deployment.
+
+## Security Considerations
+
+- Use strong, unique credentials and protect `.env` and persistent data directories.
+- Do not expose the Flask dashboard directly to the public internet.
+- Review IPv4 and IPv6 forwarding rules independently.
+- Test routing behavior and DNS handling after configuration changes.
+- Tor does not make every application or protocol anonymous.
+- WARP changes the network path but does not provide Tor-style anonymity.
+- DNS-based ad blocking cannot reliably remove every application-layer advertisement.
+- Routing policies and firewall rules should be independently audited before being relied upon as security boundaries.
+
+This project is intended for experimentation, learning, and personal network management. It has not been independently security-audited.
+
+## Documentation
+
+| Document | Subject |
+|---|---|
+| [Overview](docs/00-Overview.md) | Project evolution and architecture |
+| [Networking Architecture](docs/01-Networking-Architecture.md) | Firewall and policy routing |
+| [Routing Modes](docs/02-Routing-Modes.md) | Per-device traffic profiles |
+| [Authentication and UI](docs/03-Authentication-And-UI.md) | Dashboard and authentication |
+| [Remote Access](docs/04-Remote-Access-ZTNA.md) | WireGuard and remote access |
+| [Systemd and Boot Recovery](docs/05-Systemd-And-Boot-Recovery.md) | Startup and recovery |
+| [Engineering Decisions](docs/06-Engineering-Decisions.md) | Implementation decisions |
+| [War Stories and Bugfixes](docs/07-War-Stories-And-Bugfixes.md) | Troubleshooting history |
+| [Knowledge Base](docs/08-Knowledge-Base.md) | DNS and network behavior |
+| [How to Run](docs/09-How-To-Run.md) | Deployment notes |
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
